@@ -13,8 +13,40 @@ connectDB();
 
 const app = express();
 
-// Middlewares
-app.use(cors({ origin: true, credentials: true }));
+// CORS configuration supporting deployment domains via CLIENT_URL
+const rawClientUrl = process.env.CLIENT_URL || '';
+const configuredOrigins = rawClientUrl
+  .split(',')
+  .map((url) => url.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+const defaultDevOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173'];
+const allowedOrigins = [...new Set([...configuredOrigins, ...defaultDevOrigins])];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, Postman, server-to-server)
+      if (!origin) return callback(null, true);
+
+      // In development or if '*' is configured, allow all origins
+      if (process.env.NODE_ENV !== 'production' || rawClientUrl === '*' || allowedOrigins.includes('*')) {
+        return callback(null, true);
+      }
+
+      // Check against allowed deployment origins
+      const cleanOrigin = origin.replace(/\/$/, '');
+      if (allowedOrigins.includes(cleanOrigin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS policy blocked access from origin: ${origin}`));
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
