@@ -22,26 +22,30 @@ const globalSearch = async (req, res, next) => {
         $or: [{ name: regex }, { sku: regex }, { category: regex }]
       })
         .limit(6)
-        .select('name sku category unit'),
+        .select('name sku category unit')
+        .lean(),
 
       RawMaterial.find({
         $or: [{ name: regex }, { sku: regex }, { supplier: regex }]
       })
         .limit(6)
-        .select('name sku unit category usesAluminium'),
+        .select('name sku unit category usesAluminium')
+        .lean(),
 
       Order.find({
         $or: [{ orderNumber: regex }, { partyName: regex }]
       })
         .limit(6)
         .populate('warehouse', 'name')
-        .select('orderNumber orderType orderDate status totalAmount partyName'),
+        .select('orderNumber orderType orderDate status totalAmount partyName')
+        .lean(),
 
       AluminiumPurchase.find({
         $or: [{ purchaseNumber: regex }, { supplier: regex }]
       })
         .limit(4)
-        .select('purchaseNumber supplier quantityInput unitInput status purchaseDate'),
+        .select('purchaseNumber supplier quantityInput unitInput status purchaseDate')
+        .lean(),
 
       AluminiumProduction.find({
         productionNumber: regex
@@ -49,6 +53,7 @@ const globalSearch = async (req, res, next) => {
         .limit(4)
         .populate('rawMaterial', 'name')
         .select('productionNumber productionQuantity rawMaterial productionDate')
+        .lean()
     ]);
 
     res.status(200).json({
@@ -58,8 +63,8 @@ const globalSearch = async (req, res, next) => {
         rawMaterials,
         orders,
         aluminium: [
-          ...aluPurchases.map((p) => ({ ...p.toObject(), type: 'Purchase' })),
-          ...aluProductions.map((p) => ({ ...p.toObject(), type: 'Production' }))
+          ...aluPurchases.map((p) => ({ ...p, type: 'Purchase' })),
+          ...aluProductions.map((p) => ({ ...p, type: 'Production' }))
         ]
       }
     });

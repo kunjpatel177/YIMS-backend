@@ -2,15 +2,24 @@ const Product = require('../models/Product');
 const BOM = require('../models/BOM');
 const Order = require('../models/Order');
 const WarehouseInventory = require('../models/WarehouseInventory');
-const { calculateProductSalesAndStock, getItemWarehouseStocks } = require('../services/inventoryService');
-const { calculateProductCapacity } = require('../services/bomCalculationService');
+const { calculateProductSalesAndStock, calculateBatchProductStats } = require('../services/inventoryService');
+const { calculateProductCapacity, calculateBatchProductCapacities } = require('../services/bomCalculationService');
 
 // @route   GET /api/products
 // @desc    Get all products with pagination, search, category filter and calculated stock/sales
 // @access  Private
 const getProducts = async (req, res, next) => {
   try {
-    const { page = 1, limit = 25, search = '', category = '', status = '', sortBy = 'name', sortOrder = 'asc' } = req.query;
+    const {
+      page = 1,
+      limit = 25,
+      search = '',
+      category = '',
+      status = '',
+      sortBy = 'name',
+      sortOrder = 'asc',
+      light = 'false'
+    } = req.query;
 
     const query = {};
     if (search) {
@@ -26,32 +35,61 @@ const getProducts = async (req, res, next) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    const total = await Product.countDocuments(query);
-    const products = await Product.find(query)
-      .sort(sort)
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const [total, products, categories] = await Promise.all([
+      Product.countDocuments(query),
+      Product.find(query)
+        .sort(sort)
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean(),
+      Product.distinct('category')
+    ]);
 
-    // Enhance each product with dynamic sales quantity and total stock
-    const enhancedProducts = await Promise.all(
-      products.map(async (prod) => {
-        const stats = await calculateProductSalesAndStock(prod._id);
-        const capacityInfo = await calculateProductCapacity(prod._id);
-        return {
-          ...prod.toObject(),
-          salesQuantity: stats.salesQuantity,
-          totalStock: stats.totalStock,
-          totalAvailable: stats.totalAvailable,
-          warehouseStocks: stats.warehouseStocks,
-          manufacturingCapacity: capacityInfo.capacity,
-          bottleneckMaterial: capacityInfo.bottleneckMaterial,
-          hasBOM: capacityInfo.hasBOM
-        };
-      })
-    );
+    if (light === 'true') {
+      return res.status(200).json({
+        success: true,
+        data: products,
+        pagination: {
+          total,
+          page: Number(page),
+          pages: Math.ceil(total / Number(limit)),
+          limit: Number(limit)
+        },
+        categories
+      });
+    }
 
-    // Get unique categories for filtering
-    const categories = await Product.distinct('category');
+    // Batch-enhance all products in parallel (O(1) DB queries instead of N+1)
+    const [statsMap, capMap] = await Promise.all([
+      calculateBatchProductStats(products),
+      calculateBatchProductCapacities(products)
+    ]);
+
+    const enhancedProducts = products.map((prod) => {
+      const key = prod._id.toString();
+      const stats = statsMap.get(key) || {
+        salesQuantity: 0,
+        totalStock: 0,
+        totalAvailable: 0,
+        warehouseStocks: []
+      };
+      const cap = capMap.get(key) || {
+        capacity: 0,
+        bottleneckMaterial: null,
+        hasBOM: false
+      };
+
+      return {
+        ...prod,
+        salesQuantity: stats.salesQuantity,
+        totalStock: stats.totalStock,
+        totalAvailable: stats.totalAvailable,
+        warehouseStocks: stats.warehouseStocks,
+        manufacturingCapacity: cap.capacity,
+        bottleneckMaterial: cap.bottleneckMaterial,
+        hasBOM: cap.hasBOM
+      };
+    });
 
     res.status(200).json({
       success: true,
@@ -74,19 +112,21 @@ const getProducts = async (req, res, next) => {
 // @access  Private
 const getProductById = async (req, res, next) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findById(req.params.id).lean();
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    const stats = await calculateProductSalesAndStock(product._id);
-    const capacityInfo = await calculateProductCapacity(product._id);
-    const bomEntries = await BOM.find({ product: product._id }).populate('rawMaterial');
+    const [stats, capacityInfo, bomEntries] = await Promise.all([
+      calculateProductSalesAndStock(product._id),
+      calculateProductCapacity(product._id),
+      BOM.find({ product: product._id }).populate('rawMaterial').lean()
+    ]);
 
     res.status(200).json({
       success: true,
       data: {
-        ...product.toObject(),
+        ...product,
         salesQuantity: stats.salesQuantity,
         totalStock: stats.totalStock,
         totalAvailable: stats.totalAvailable,

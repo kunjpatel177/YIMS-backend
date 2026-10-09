@@ -5,7 +5,7 @@ const Warehouse = require('../models/Warehouse');
 // @access  Private
 const getWarehouses = async (req, res, next) => {
   try {
-    const warehouses = await Warehouse.find().sort({ code: 1 });
+    const warehouses = await Warehouse.find().sort({ code: 1 }).lean();
     res.status(200).json({
       success: true,
       data: warehouses
@@ -20,7 +20,7 @@ const getWarehouses = async (req, res, next) => {
 // @access  Private
 const getWarehouseById = async (req, res, next) => {
   try {
-    const warehouse = await Warehouse.findById(req.params.id);
+    const warehouse = await Warehouse.findById(req.params.id).lean();
     if (!warehouse) {
       return res.status(404).json({ success: false, message: 'Warehouse not found' });
     }

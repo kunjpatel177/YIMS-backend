@@ -38,21 +38,24 @@ const getTransfers = async (req, res, next) => {
       query.transferNumber = { $regex: search, $options: 'i' };
     }
 
-    const total = await WarehouseTransfer.countDocuments(query);
-    const transfers = await WarehouseTransfer.find(query)
-      .populate('sourceWarehouse', 'name code')
-      .populate('destinationWarehouse', 'name code')
-      .populate({
-        path: 'item',
-        select: 'name sku unit'
-      })
-      .populate({
-        path: 'items.item',
-        select: 'name sku unit'
-      })
-      .sort({ transferDate: -1, createdAt: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const [total, transfers] = await Promise.all([
+      WarehouseTransfer.countDocuments(query),
+      WarehouseTransfer.find(query)
+        .populate('sourceWarehouse', 'name code')
+        .populate('destinationWarehouse', 'name code')
+        .populate({
+          path: 'item',
+          select: 'name sku unit'
+        })
+        .populate({
+          path: 'items.item',
+          select: 'name sku unit'
+        })
+        .sort({ transferDate: -1, createdAt: -1 })
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean()
+    ]);
 
     res.status(200).json({
       success: true,
@@ -78,7 +81,8 @@ const getTransferById = async (req, res, next) => {
       .populate('sourceWarehouse', 'name code address')
       .populate('destinationWarehouse', 'name code address')
       .populate('item', 'name sku unit')
-      .populate('items.item', 'name sku unit');
+      .populate('items.item', 'name sku unit')
+      .lean();
 
     if (!transfer) {
       return res.status(404).json({ success: false, message: 'Transfer not found' });

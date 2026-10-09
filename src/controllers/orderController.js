@@ -44,16 +44,19 @@ const getOrders = async (req, res, next) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    const total = await Order.countDocuments(query);
-    const orders = await Order.find(query)
-      .populate('warehouse', 'name code')
-      .populate({
-        path: 'items.item',
-        select: 'name sku unit'
-      })
-      .sort(sort)
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const [total, orders] = await Promise.all([
+      Order.countDocuments(query),
+      Order.find(query)
+        .populate('warehouse', 'name code')
+        .populate({
+          path: 'items.item',
+          select: 'name sku unit'
+        })
+        .sort(sort)
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean()
+    ]);
 
     res.status(200).json({
       success: true,
@@ -80,7 +83,8 @@ const getOrderById = async (req, res, next) => {
       .populate({
         path: 'items.item',
         select: 'name sku unit category'
-      });
+      })
+      .lean();
 
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });

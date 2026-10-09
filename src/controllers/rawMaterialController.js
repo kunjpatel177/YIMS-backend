@@ -4,7 +4,10 @@ const Order = require('../models/Order');
 const AluminiumProduction = require('../models/AluminiumProduction');
 const WarehouseInventory = require('../models/WarehouseInventory');
 const WarehouseTransfer = require('../models/WarehouseTransfer');
-const { calculateRawMaterialInventory } = require('../services/inventoryService');
+const {
+  calculateRawMaterialInventory,
+  calculateBatchRawMaterialInventory
+} = require('../services/inventoryService');
 
 // @route   GET /api/raw-materials
 // @desc    Get raw materials with dynamic stock, reorder status, pagination, filter
@@ -20,7 +23,8 @@ const getRawMaterials = async (req, res, next) => {
       reorderFilter = '',
       usesAluminium = '',
       sortBy = 'name',
-      sortOrder = 'asc'
+      sortOrder = 'asc',
+      light = 'false'
     } = req.query;
 
     const query = {};
@@ -38,32 +42,36 @@ const getRawMaterials = async (req, res, next) => {
     const sort = {};
     sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
 
-    const total = await RawMaterial.countDocuments(query);
-    const materials = await RawMaterial.find(query)
-      .sort(sort)
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const [total, materials, categories] = await Promise.all([
+      RawMaterial.countDocuments(query),
+      RawMaterial.find(query)
+        .sort(sort)
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean(),
+      RawMaterial.distinct('category')
+    ]);
 
-    // Calculate dynamic inventory, purchases, production output, and reorder status
-    let enhancedMaterials = await Promise.all(
-      materials.map(async (mat) => {
-        const invData = await calculateRawMaterialInventory(mat._id);
-        return {
-          ...mat.toObject(),
-          currentInventory: invData.currentInventory,
-          purchasedQuantity: invData.purchasedQuantity,
-          productionOutput: invData.productionOutput,
-          reorderStatus: invData.reorderStatus,
-          warehouseStocks: invData.warehouseStocks
-        };
-      })
-    );
+    if (light === 'true') {
+      return res.status(200).json({
+        success: true,
+        data: materials,
+        pagination: {
+          total,
+          page: Number(page),
+          pages: Math.ceil(total / Number(limit)),
+          limit: Number(limit)
+        },
+        categories
+      });
+    }
+
+    // Batch-calculate dynamic inventory, purchases, production output, and reorder status in O(1) DB queries
+    let enhancedMaterials = await calculateBatchRawMaterialInventory(materials);
 
     if (reorderFilter) {
       enhancedMaterials = enhancedMaterials.filter((m) => m.reorderStatus === reorderFilter);
     }
-
-    const categories = await RawMaterial.distinct('category');
 
     res.status(200).json({
       success: true,
@@ -86,33 +94,33 @@ const getRawMaterials = async (req, res, next) => {
 // @access  Private
 const getRawMaterialById = async (req, res, next) => {
   try {
-    const material = await RawMaterial.findById(req.params.id);
+    const material = await RawMaterial.findById(req.params.id).lean();
     if (!material) {
       return res.status(404).json({ success: false, message: 'Raw material not found' });
     }
 
-    const invData = await calculateRawMaterialInventory(material._id);
-    const usedInBOM = await BOM.find({ rawMaterial: material._id }).populate('product', 'name sku');
-
-    // Recent orders
-    const recentOrders = await Order.find({
-      'items.itemType': 'RawMaterial',
-      'items.item': material._id
-    })
-      .sort({ orderDate: -1 })
-      .limit(10);
-
-    // Recent aluminium productions
-    const recentProductions = await AluminiumProduction.find({
-      rawMaterial: material._id
-    })
-      .sort({ productionDate: -1 })
-      .limit(10);
+    const [invData, usedInBOM, recentOrders, recentProductions] = await Promise.all([
+      calculateRawMaterialInventory(material._id),
+      BOM.find({ rawMaterial: material._id }).populate('product', 'name sku').lean(),
+      Order.find({
+        'items.itemType': 'RawMaterial',
+        'items.item': material._id
+      })
+        .sort({ orderDate: -1 })
+        .limit(10)
+        .lean(),
+      AluminiumProduction.find({
+        rawMaterial: material._id
+      })
+        .sort({ productionDate: -1 })
+        .limit(10)
+        .lean()
+    ]);
 
     res.status(200).json({
       success: true,
       data: {
-        ...material.toObject(),
+        ...material,
         ...invData,
         usedInBOM,
         recentOrders,

@@ -20,7 +20,8 @@ const getWarehouseInventory = async (req, res, next) => {
         path: 'item',
         select: 'name sku category unit reorderPoint'
       })
-      .sort({ updatedAt: -1 });
+      .sort({ updatedAt: -1 })
+      .lean();
 
     let filtered = inventories.filter((inv) => inv.item != null);
 
@@ -57,28 +58,47 @@ const getWarehouseInventory = async (req, res, next) => {
 // @access  Private
 const getWarehouseInventorySummary = async (req, res, next) => {
   try {
-    const warehouses = await Warehouse.find({ status: 'Active' }).sort({ code: 1 });
+    const [warehouses, agg] = await Promise.all([
+      Warehouse.find({ status: 'Active' }).sort({ code: 1 }).lean(),
+      WarehouseInventory.aggregate([
+        {
+          $group: {
+            _id: { warehouse: '$warehouse', itemType: '$itemType' },
+            totalStock: { $sum: '$currentStock' },
+            count: { $sum: 1 }
+          }
+        }
+      ])
+    ]);
 
-    const summary = await Promise.all(
-      warehouses.map(async (wh) => {
-        const items = await WarehouseInventory.find({ warehouse: wh._id });
-        const productCount = items.filter((i) => i.itemType === 'Product').reduce((sum, i) => sum + i.currentStock, 0);
-        const materialCount = items
-          .filter((i) => i.itemType === 'RawMaterial')
-          .reduce((sum, i) => sum + i.currentStock, 0);
+    const statsByWh = new Map();
+    for (const row of agg) {
+      const whKey = row._id.warehouse.toString();
+      if (!statsByWh.has(whKey)) {
+        statsByWh.set(whKey, { productStock: 0, materialStock: 0, distinctCount: 0 });
+      }
+      const entry = statsByWh.get(whKey);
+      if (row._id.itemType === 'Product') {
+        entry.productStock += row.totalStock || 0;
+      } else if (row._id.itemType === 'RawMaterial') {
+        entry.materialStock += row.totalStock || 0;
+      }
+      entry.distinctCount += row.count || 0;
+    }
 
-        return {
-          warehouseId: wh._id,
-          name: wh.name,
-          code: wh.code,
-          address: wh.address,
-          totalProductsStock: productCount,
-          totalRawMaterialsStock: materialCount,
-          totalUnits: productCount + materialCount,
-          distinctItemsCount: items.length
-        };
-      })
-    );
+    const summary = warehouses.map((wh) => {
+      const s = statsByWh.get(wh._id.toString()) || { productStock: 0, materialStock: 0, distinctCount: 0 };
+      return {
+        warehouseId: wh._id,
+        name: wh.name,
+        code: wh.code,
+        address: wh.address,
+        totalProductsStock: s.productStock,
+        totalRawMaterialsStock: s.materialStock,
+        totalUnits: s.productStock + s.materialStock,
+        distinctItemsCount: s.distinctCount
+      };
+    });
 
     res.status(200).json({
       success: true,

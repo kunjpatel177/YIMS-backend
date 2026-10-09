@@ -53,10 +53,9 @@ const login = async (req, res, next) => {
 // @access  Private
 const getMe = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
     res.status(200).json({
       success: true,
-      user
+      user: req.user
     });
   } catch (error) {
     next(error);
@@ -93,6 +92,8 @@ const updateProfile = async (req, res, next) => {
     }
 
     await user.save();
+    const { invalidateUserCache } = require('../middleware/auth');
+    invalidateUserCache(user._id);
 
     res.status(200).json({
       success: true,

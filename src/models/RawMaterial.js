@@ -66,5 +66,8 @@ const rawMaterialSchema = new mongoose.Schema(
 );
 
 rawMaterialSchema.index({ name: 'text', sku: 'text', category: 'text' });
+rawMaterialSchema.index({ status: 1, name: 1 });
+rawMaterialSchema.index({ category: 1 });
+rawMaterialSchema.index({ usesAluminium: 1 });
 
 module.exports = mongoose.model('RawMaterial', rawMaterialSchema);

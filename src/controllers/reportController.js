@@ -1,17 +1,16 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const RawMaterial = require('../models/RawMaterial');
-const Warehouse = require('../models/Warehouse');
-const WarehouseInventory = require('../models/WarehouseInventory');
 const WarehouseTransfer = require('../models/WarehouseTransfer');
-const AluminiumInventory = require('../models/AluminiumInventory');
 const AluminiumPurchase = require('../models/AluminiumPurchase');
 const AluminiumProduction = require('../models/AluminiumProduction');
 const AluminiumLedger = require('../models/AluminiumLedger');
-const BOM = require('../models/BOM');
 const { getAluminiumInventory } = require('../services/aluminiumService');
 const { getAllProductsCapacitySummary } = require('../services/bomCalculationService');
-const { calculateRawMaterialInventory, calculateProductSalesAndStock } = require('../services/inventoryService');
+const {
+  calculateBatchRawMaterialInventory,
+  calculateBatchProductStats
+} = require('../services/inventoryService');
 
 // Helper to parse date filters
 const buildDateFilter = (field, startDate, endDate) => {
@@ -37,14 +36,15 @@ const getSalesReport = async (req, res, next) => {
     const orders = await Order.find(query)
       .populate('warehouse', 'name code')
       .populate('items.item', 'name sku unit category')
-      .sort({ orderDate: -1 });
+      .sort({ orderDate: -1 })
+      .lean();
 
     const rows = [];
     orders.forEach((ord) => {
       ord.items.forEach((item) => {
         rows.push({
           orderNumber: ord.orderNumber,
-          date: ord.orderDate.toISOString().split('T')[0],
+          date: new Date(ord.orderDate).toISOString().split('T')[0],
           partyName: ord.partyName || 'Customer',
           warehouse: ord.warehouse?.name || 'N/A',
           itemType: item.itemType || 'Product',
@@ -77,14 +77,15 @@ const getPurchaseReport = async (req, res, next) => {
     const orders = await Order.find(query)
       .populate('warehouse', 'name code')
       .populate('items.item', 'name sku unit category')
-      .sort({ orderDate: -1 });
+      .sort({ orderDate: -1 })
+      .lean();
 
     const rows = [];
     orders.forEach((ord) => {
       ord.items.forEach((item) => {
         rows.push({
           orderNumber: ord.orderNumber,
-          date: ord.orderDate.toISOString().split('T')[0],
+          date: new Date(ord.orderDate).toISOString().split('T')[0],
           supplier: ord.partyName || 'Supplier',
           warehouse: ord.warehouse?.name || 'N/A',
           itemName: item.item?.name || 'Deleted Material',
@@ -111,40 +112,48 @@ const getInventoryReport = async (req, res, next) => {
     const { type = 'all' } = req.query; // 'all', 'products', 'raw-materials'
     const rows = [];
 
-    if (type === 'all' || type === 'products') {
-      const products = await Product.find({ status: 'Active' }).sort({ name: 1 });
-      for (const p of products) {
-        const stats = await calculateProductSalesAndStock(p._id);
-        rows.push({
-          itemType: 'Product',
-          name: p.name,
-          sku: p.sku,
-          category: p.category,
-          unit: p.unit,
-          currentStock: stats.totalStock,
-          salesQuantity: stats.salesQuantity,
-          reorderPoint: p.reorderPoint || 0,
-          status: stats.totalStock === 0 ? 'Out of Stock' : stats.totalStock <= p.reorderPoint ? 'Low Stock' : 'In Stock'
-        });
-      }
+    const [products, materials] = await Promise.all([
+      type === 'all' || type === 'products'
+        ? Product.find({ status: 'Active' }).sort({ name: 1 }).lean()
+        : Promise.resolve([]),
+      type === 'all' || type === 'raw-materials'
+        ? RawMaterial.find({ status: 'Active' }).sort({ name: 1 }).lean()
+        : Promise.resolve([])
+    ]);
+
+    const [prodStatsMap, enhancedMaterials] = await Promise.all([
+      products.length > 0 ? calculateBatchProductStats(products) : Promise.resolve(new Map()),
+      materials.length > 0 ? calculateBatchRawMaterialInventory(materials) : Promise.resolve([])
+    ]);
+
+    for (const p of products) {
+      const stats = prodStatsMap.get(p._id.toString()) || { totalStock: 0, salesQuantity: 0 };
+      const reorderPoint = p.reorderPoint || 0;
+      rows.push({
+        itemType: 'Product',
+        name: p.name,
+        sku: p.sku,
+        category: p.category,
+        unit: p.unit,
+        currentStock: stats.totalStock,
+        salesQuantity: stats.salesQuantity,
+        reorderPoint,
+        status: stats.totalStock === 0 ? 'Out of Stock' : stats.totalStock <= reorderPoint ? 'Low Stock' : 'In Stock'
+      });
     }
 
-    if (type === 'all' || type === 'raw-materials') {
-      const materials = await RawMaterial.find({ status: 'Active' }).sort({ name: 1 });
-      for (const m of materials) {
-        const inv = await calculateRawMaterialInventory(m._id);
-        rows.push({
-          itemType: 'RawMaterial',
-          name: m.name,
-          sku: m.sku,
-          category: m.category,
-          unit: m.unit,
-          currentStock: inv.currentInventory,
-          startingInventory: m.startingInventory,
-          reorderPoint: m.reorderPoint,
-          status: inv.reorderStatus
-        });
-      }
+    for (const m of enhancedMaterials) {
+      rows.push({
+        itemType: 'RawMaterial',
+        name: m.name,
+        sku: m.sku,
+        category: m.category,
+        unit: m.unit,
+        currentStock: m.currentInventory,
+        startingInventory: m.startingInventory,
+        reorderPoint: m.reorderPoint,
+        status: m.reorderStatus
+      });
     }
 
     res.status(200).json({ success: true, count: rows.length, data: rows });
@@ -156,22 +165,22 @@ const getInventoryReport = async (req, res, next) => {
 // @route   GET /api/reports/low-stock
 const getLowStockReport = async (req, res, next) => {
   try {
-    const materials = await RawMaterial.find({ status: 'Active' });
+    const materials = await RawMaterial.find({ status: 'Active' }).lean();
+    const enhancedMaterials = await calculateBatchRawMaterialInventory(materials);
     const lowStockList = [];
 
-    for (const m of materials) {
-      const inv = await calculateRawMaterialInventory(m._id);
-      if (inv.reorderStatus === 'Low Stock' || inv.reorderStatus === 'Out of Stock') {
+    for (const m of enhancedMaterials) {
+      if (m.reorderStatus === 'Low Stock' || m.reorderStatus === 'Out of Stock') {
         lowStockList.push({
           name: m.name,
           sku: m.sku,
           category: m.category,
           unit: m.unit,
-          currentStock: inv.currentInventory,
+          currentStock: m.currentInventory,
           reorderPoint: m.reorderPoint,
-          deficit: Math.max(0, m.reorderPoint - inv.currentInventory),
+          deficit: Math.max(0, m.reorderPoint - m.currentInventory),
           supplier: m.supplier || 'N/A',
-          status: inv.reorderStatus
+          status: m.reorderStatus
         });
       }
     }
@@ -217,18 +226,20 @@ const getTransferReport = async (req, res, next) => {
       .populate('destinationWarehouse', 'name code')
       .populate('item', 'name sku unit')
       .populate('items.item', 'name sku unit')
-      .sort({ transferDate: -1 });
+      .sort({ transferDate: -1 })
+      .lean();
 
     const rows = [];
     transfers.forEach((t) => {
-      const lineItems = (t.items && t.items.length > 0)
-        ? t.items
-        : [{ itemType: t.itemType, item: t.item, quantity: t.quantity }];
+      const lineItems =
+        t.items && t.items.length > 0
+          ? t.items
+          : [{ itemType: t.itemType, item: t.item, quantity: t.quantity }];
 
       lineItems.forEach((it) => {
         rows.push({
           transferNumber: t.transferNumber,
-          date: t.transferDate.toISOString().split('T')[0],
+          date: new Date(t.transferDate).toISOString().split('T')[0],
           itemType: it.itemType || t.itemType,
           itemName: it.item?.name || t.item?.name || 'Item',
           sku: it.item?.sku || t.item?.sku || 'N/A',
@@ -255,7 +266,7 @@ const getAluminiumReports = async (req, res, next) => {
 
     if (subReport === 'purchases') {
       const query = { ...buildDateFilter('purchaseDate', startDate, endDate) };
-      const purchases = await AluminiumPurchase.find(query).sort({ purchaseDate: -1 });
+      const purchases = await AluminiumPurchase.find(query).sort({ purchaseDate: -1 }).lean();
       return res.status(200).json({ success: true, data: purchases });
     }
 
@@ -264,14 +275,17 @@ const getAluminiumReports = async (req, res, next) => {
       const productions = await AluminiumProduction.find(query)
         .populate('rawMaterial', 'name sku unit')
         .populate('warehouse', 'name code')
-        .sort({ productionDate: -1 });
+        .sort({ productionDate: -1 })
+        .lean();
       return res.status(200).json({ success: true, data: productions });
     }
 
     // Default: Ledger
     const query = { ...buildDateFilter('date', startDate, endDate) };
-    const ledger = await AluminiumLedger.find(query).sort({ date: -1 });
-    const inv = await getAluminiumInventory();
+    const [ledger, inv] = await Promise.all([
+      AluminiumLedger.find(query).sort({ date: -1 }).lean(),
+      getAluminiumInventory()
+    ]);
 
     res.status(200).json({
       success: true,

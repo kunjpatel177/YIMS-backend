@@ -41,5 +41,6 @@ warehouseInventorySchema.virtual('availableStock').get(function () {
 
 // Ensure only one inventory record per item per warehouse
 warehouseInventorySchema.index({ warehouse: 1, itemType: 1, item: 1 }, { unique: true });
+warehouseInventorySchema.index({ itemType: 1, item: 1 });
 
 module.exports = mongoose.model('WarehouseInventory', warehouseInventorySchema);

@@ -46,11 +46,14 @@ const getPurchases = async (req, res, next) => {
       }
     }
 
-    const total = await AluminiumPurchase.countDocuments(query);
-    const purchases = await AluminiumPurchase.find(query)
-      .sort({ purchaseDate: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const [total, purchases] = await Promise.all([
+      AluminiumPurchase.countDocuments(query),
+      AluminiumPurchase.find(query)
+        .sort({ purchaseDate: -1 })
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean()
+    ]);
 
     res.status(200).json({
       success: true,
@@ -106,7 +109,7 @@ const createPurchase = async (req, res, next) => {
       await completeAluminiumPurchase(purchase._id);
     }
 
-    const updated = await AluminiumPurchase.findById(purchase._id);
+    const updated = await AluminiumPurchase.findById(purchase._id).lean();
 
     res.status(201).json({
       success: true,
@@ -186,13 +189,16 @@ const getProductions = async (req, res, next) => {
       }
     }
 
-    const total = await AluminiumProduction.countDocuments(query);
-    const productions = await AluminiumProduction.find(query)
-      .populate('rawMaterial', 'name sku unit usesAluminium aluminiumRequiredPerUnit aluminiumUnit')
-      .populate('warehouse', 'name code')
-      .sort({ productionDate: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const [total, productions] = await Promise.all([
+      AluminiumProduction.countDocuments(query),
+      AluminiumProduction.find(query)
+        .populate('rawMaterial', 'name sku unit usesAluminium aluminiumRequiredPerUnit aluminiumUnit')
+        .populate('warehouse', 'name code')
+        .sort({ productionDate: -1 })
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean()
+    ]);
 
     res.status(200).json({
       success: true,
@@ -229,11 +235,14 @@ const getLedger = async (req, res, next) => {
       }
     }
 
-    const total = await AluminiumLedger.countDocuments(query);
-    const ledger = await AluminiumLedger.find(query)
-      .sort({ date: -1, createdAt: -1 })
-      .skip((Number(page) - 1) * Number(limit))
-      .limit(Number(limit));
+    const [total, ledger] = await Promise.all([
+      AluminiumLedger.countDocuments(query),
+      AluminiumLedger.find(query)
+        .sort({ date: -1, createdAt: -1 })
+        .skip((Number(page) - 1) * Number(limit))
+        .limit(Number(limit))
+        .lean()
+    ]);
 
     res.status(200).json({
       success: true,

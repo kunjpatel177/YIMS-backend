@@ -59,5 +59,6 @@ const aluminiumProductionSchema = new mongoose.Schema(
 );
 
 aluminiumProductionSchema.index({ productionDate: -1 });
+aluminiumProductionSchema.index({ rawMaterial: 1, status: 1 });
 
 module.exports = mongoose.model('AluminiumProduction', aluminiumProductionSchema);

@@ -8,7 +8,7 @@ const { calculateProductCapacity, getAllProductsCapacitySummary } = require('../
 // @access  Private
 const getBOMs = async (req, res, next) => {
   try {
-    const { productId, search, page = 1, limit = 50 } = req.query;
+    const { productId, search } = req.query;
 
     const query = {};
     if (productId) query.product = productId;
@@ -16,7 +16,8 @@ const getBOMs = async (req, res, next) => {
     const boms = await BOM.find(query)
       .populate('product', 'name sku category')
       .populate('rawMaterial', 'name sku unit usesAluminium aluminiumRequiredPerUnit aluminiumUnit')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
     // Filter by search if provided
     let filtered = boms;
@@ -49,17 +50,17 @@ const getBOMByProduct = async (req, res, next) => {
     const { productId } = req.params;
     const { warehouseId } = req.query;
 
-    const product = await Product.findById(productId);
+    const [product, bomEntries, capacityAnalysis] = await Promise.all([
+      Product.findById(productId).lean(),
+      BOM.find({ product: productId })
+        .populate('rawMaterial', 'name sku unit usesAluminium aluminiumRequiredPerUnit aluminiumUnit')
+        .lean(),
+      calculateProductCapacity(productId, warehouseId)
+    ]);
+
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
-
-    const bomEntries = await BOM.find({ product: productId }).populate(
-      'rawMaterial',
-      'name sku unit usesAluminium aluminiumRequiredPerUnit aluminiumUnit'
-    );
-
-    const capacityAnalysis = await calculateProductCapacity(productId, warehouseId);
 
     res.status(200).json({
       success: true,

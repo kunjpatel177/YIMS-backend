@@ -11,7 +11,10 @@ dotenv.config();
 // Connect to MongoDB
 connectDB();
 
+const zlib = require('zlib');
+
 const app = express();
+app.disable('x-powered-by');
 
 // CORS configuration supporting deployment domains via CLIENT_URL
 const rawClientUrl = process.env.CLIENT_URL || '';
@@ -44,11 +47,44 @@ app.use(
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    maxAge: 86400 // Cache preflight OPTIONS requests for 24 hours
   })
 );
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// Built-in Gzip compression for JSON payloads > 1KB
+app.use((req, res, next) => {
+  const acceptEncoding = req.headers['accept-encoding'] || '';
+  if (!acceptEncoding.includes('gzip')) {
+    return next();
+  }
+
+  const originalJson = res.json.bind(res);
+  res.json = (body) => {
+    try {
+      const jsonStr = JSON.stringify(body);
+      if (!jsonStr || jsonStr.length < 1024) {
+        return originalJson(body);
+      }
+      zlib.gzip(Buffer.from(jsonStr, 'utf8'), (err, compressed) => {
+        if (err || res.headersSent) {
+          return originalJson(body);
+        }
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Content-Encoding', 'gzip');
+        res.setHeader('Vary', 'Accept-Encoding');
+        res.setHeader('Content-Length', compressed.length);
+        return res.end(compressed);
+      });
+      return res;
+    } catch (e) {
+      return originalJson(body);
+    }
+  };
+  next();
+});
 
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
@@ -74,16 +110,24 @@ app.use('/api/reports', require('./routes/reportRoutes'));
 app.use('/api/search', require('./routes/searchRoutes'));
 app.use('/api/settings', require('./routes/settingsRoutes'));
 
-// Serve static frontend build if available
+// Serve static frontend build if available with aggressive caching for hashed assets
 const path = require('path');
 const fs = require('fs');
 const frontendDist = path.join(__dirname, '../../frontend/dist');
 if (fs.existsSync(frontendDist)) {
-  app.use(express.static(frontendDist));
-  app.get('*', (req, res, next) => {
+  app.use(
+    '/assets',
+    express.static(path.join(frontendDist, 'assets'), {
+      maxAge: '1y',
+      immutable: true
+    })
+  );
+  app.use(express.static(frontendDist, { maxAge: '1h' }));
+  app.get('*', (req, res) => {
     if (req.originalUrl.startsWith('/api')) {
       return res.status(404).json({ success: false, message: `API route not found: ${req.originalUrl}` });
     }
+    res.setHeader('Cache-Control', 'no-cache');
     res.sendFile(path.join(frontendDist, 'index.html'));
   });
 } else {
